@@ -7,7 +7,7 @@
 #
 ################################################################################
 # \copyright
-# Copyright 2024, Cypress Semiconductor Corporation (an Infineon company)
+# Copyright 2018-2024, Cypress Semiconductor Corporation (an Infineon company)
 # SPDX-License-Identifier: Apache-2.0
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,22 +77,28 @@ VERBOSE=
 ################################################################################
 
 # Overriding selected control method if needed:
-CTRL=RFO
+# Supported values: CTRL_METHOD_TBC, CTRL_METHOD_SFO, CTRL_METHOD_RFO
+# CTRL_METHOD_TBC: Use when image is built for trapezoidal with block commutation control.
+# CTRL_METHOD_RFO: Use when image is built for rotor field oriented control.
+# CTRL_METHOD_SFO: Use when image is built for stator field oreiented control.
+CTRL=CTRL_METHOD_RFO
 
-# Supported values: TBC, SFO, RFO
-# TBC: Use when image is built for trapezoidal with block commutation control.
-# RFO: Use when image is built for rotor field oriented control.
-# SFO: Use when image is built for stator field oreiented control.
-ifeq ($(CTRL),TBC)
-CTRL_METHOD=CTRL_METHOD_TBC
-else
-ifeq ($(CTRL),SFO)
-CTRL_METHOD=CTRL_METHOD_SFO
-else
-CTRL=RFO
-CTRL_METHOD=CTRL_METHOD_RFO
-endif
-endif
+DEFINES+=$(CTRL)
+
+# Configure number of motor drives, Supported values : 1
+# Number motor driver suppored varies on target deviced  
+DEFINES+=MOTOR_CTRL_NO_OF_MOTOR=0x01
+
+# Configure number of oscilloscope channels in the "Motor Suite"
+#
+# Supported values : 0 - 8, value 0 will disabled oscilloscope 
+DEFINES+=MOTOR_CTRL_NO_OF_SCOPE_CHANNELS=0x4
+# Enable follwoing add-on function by remove "MOTOR_CTRL_DISABLE_ADDON_FEATURES" definition
+# 
+# Motor phase U,V and W voltage measurement; only used in "Dyno" mode
+# Torque calculation in RFO control method; used in load profiler
+# Addition gain and offset configuration for ADC input
+#DEFINES+=MOTOR_CTRL_DISABLE_ADDON_FEATURES
 
 # Enable optional code that is ordinarily disabled by default.
 #
@@ -105,7 +111,7 @@ endif
 # added to the build
 #
 COMPONENTS=
-
+COMPONENTS+=$(CTRL)
 # Like COMPONENTS, but disable optional code that was enabled by default.
 DISABLE_COMPONENTS=
 
@@ -115,38 +121,20 @@ DISABLE_COMPONENTS=
 # by default, or otherwise not found by the build system.
 SOURCES=
 
+DEFINES+=$(TARGET) # define will be used in the application files.
+
 # By default the build system automatically looks in the Makefile's directory
 # tree for source code and builds it. The SOURCES variable can be used to
 # manually add source code to the build process from a location not searched
 # by default, or otherwise not found by the build system.
-CY_IGNORE=$(wildcard ../mtb_shared/motor-ctrl-lib/*/HwInterface/)
-CY_IGNORE+=$(wildcard ../mtb_shared/motor-ctrl-lib/*/OperationalCode/StateMachine*)
-CY_IGNORE+=$(wildcard ../mtb_shared/motor-ctrl-lib/*/OperationalCode/Params*)
-CY_IGNORE+=$(wildcard ../mtb_shared/motor-ctrl-lib/*/devops_scripts/ ../mtb_shared/motor-ctrl-lib/*/RegressionTests/ ../mtb_shared/motor-ctrl-lib/*/SILTest/ ../mtb_shared/motor-ctrl-lib/*/ThirdPartyLib/cpputest/ ../mtb_shared/motor-ctrl-lib/*/OperationalCode/ParamsDefault.c ../mtb_shared/motor-ctrl-lib/*/StaticLib/)
 
-#For PSOCC3 Device motor control library support	
-ifeq ($(CTRL),TBC)
-CY_IGNORE+=$(wildcard ../mtb_shared/motor-ctrl-lib/*/OperationalCode/COMPONENT_CAT1B/TOOLCHAIN_GCC_ARM/libcy_motor_ctrl_sfo.a ../mtb_shared/motor-ctrl-lib/*/OperationalCode/COMPONENT_CAT1B/TOOLCHAIN_GCC_ARM/libcy_motor_ctrl_rfo.a )
-else
-ifeq ($(CTRL),SFO)
-CY_IGNORE+=$(wildcard ../mtb_shared/motor-ctrl-lib/*/OperationalCode/COMPONENT_CAT1B/TOOLCHAIN_GCC_ARM/libcy_motor_ctrl_rfo.a ../mtb_shared/motor-ctrl-lib/*/OperationalCode/COMPONENT_CAT1B/TOOLCHAIN_GCC_ARM/libcy_motor_ctrl_tbc.a )
-else
-CY_IGNORE+=$(wildcard ../mtb_shared/motor-ctrl-lib/*/OperationalCode/COMPONENT_CAT1B/TOOLCHAIN_GCC_ARM/libcy_motor_ctrl_sfo.a ../mtb_shared/motor-ctrl-lib/*/OperationalCode/COMPONENT_CAT1B/TOOLCHAIN_GCC_ARM/libcy_motor_ctrl_tbc.a )
-endif
-endif
+#DEFINES+=RAMFUNC_ENABLE # Enable execution from RAM
+
+
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).
 INCLUDES=
-
-# Add additional defines to the build process (without a leading -D).
-# BENCH_TEST vs PC_TEST:
-# For bench testing, use BENCH_TEST
-# For unit testing and SIL testing on the PC, use PC_TEST
-# It is not recommended to use PC_TEST for bench testing since it adds additional
-# test code that will increase the ISR time.
-DEFINES+=$(CTRL_METHOD)
-
 
 # Select softfp or hardfp floating point. Default is softfp.
 VFP_SELECT=hardfp
@@ -156,7 +144,7 @@ VFP_SELECT=hardfp
 # NOTE: Includes and defines should use the INCLUDES and DEFINES variable
 # above.
 ifeq ($(TOOLCHAIN),GCC_ARM)
-CFLAGS=-Ofast
+CFLAGS=-Os
 CFLAGS+=-Wno-maybe-uninitialized    # This is getting rid of compiler warning when compiling PDL source file cyhal_spi.c
 endif
 

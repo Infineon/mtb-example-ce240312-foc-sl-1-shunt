@@ -1,8 +1,9 @@
 /******************************************************************************
 * File Name:   main.c
 *
-* Description: This code example demonstrates the implementation of PMSM sensorless 
-* field-oriented control (FOC) using the Infineon's PSOC Control C3 MCU.
+* Description: This code example demonstrates sensorless 1-shunt Field-Oriented 
+* Control (FOC) for a Permanent Magnet Synchronous Motor (PMSM) using Infineon’s 
+* PSOC™ Control C3 MCU. 
 *
 * Related Document: See README.md
 *
@@ -64,8 +65,6 @@ int main(void)
 
     result = cybsp_init();                 /* Initialize the device and board peripherals */
     CY_ASSERT(result == CY_RSLT_SUCCESS);  /* Board init failed. Stop program execution   */
-
-    Cy_HPPASS_AC_Start(0,1000U);
 
 
     // Initialize controller

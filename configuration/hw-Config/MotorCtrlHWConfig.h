@@ -1,12 +1,4 @@
-/******************************************************************************
-* File Name:   pmsm_foc_motor_NANOTEC_MOTOR_DB42S03.h
-*
-* Description: This file include NANOTECH MOTOR (DB42S03) configurations.
-*
-* Related Document: See README.md
-*
-*
-*******************************************************************************
+/*******************************************************************************
 * Copyright 2024, Cypress Semiconductor Corporation (an Infineon company) or
 * an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
 *
@@ -38,35 +30,22 @@
 * of such system or application assumes all risk of such use and in doing
 * so agrees to indemnify Cypress against all liability.
 *******************************************************************************/
+#include "General.h"
 
-#ifndef PMSM_FOC_MOTOR_NANOTEC_MOTOR_DB42S03_H_
-#define PMSM_FOC_MOTOR_NANOTEC_MOTOR_DB42S03_H_
+/* Temperature sensor configurations */
+#define ACTIVE_TEMP_SENSOR           false        // Not supported in default board, Active IC (e.g. MCP9700T-E/TT) vs Passive NTC (e.g. NCP18WF104J03RB)
+#if (ACTIVE_TEMP_SENSOR)
+#define TEMP_SENSOR_1D_MV  (10.0f)  //mV
+#define TEMP_SENSOR_0D_MV  (-400.0f) //mV
+#define TEMP_SENSOR_SCALE  ((TEMP_SENSOR_1D_MV * (1 << 12U))/(ADC_VREF_GAIN * CY_CFG_PWR_VDDA_MV))
+#define TEMP_SENSOR_OFFSET ((TEMP_SENSOR_SCALE/TEMP_SENSOR_1D_MV)*TEMP_SENSOR_0D_MV) 
+#endif
+extern  TEMP_SENS_LUT_t     Temp_Sens_LUT;
 
+/* PWM configurations*/
+#define PWM_INVERSION                (false)
+#define PWM_TRIG_ADVANCE             (0U)          // [ticks]
 
-#define VOLTAGE      (24.0f)       // Rated Voltage
-#define N_SPEED      (4000.0f)     // nominal speed [RPM]
-#define MAX_SPEED    (6200.0f)     // maximum no load speed [RPM]
-#define POLE         (8.0f)        // number of pole
-#define LD           (1.196E-3f)   // q-axis inductance [H]
-#define LQ           (1.196E-3f)   // d-axis inductance [H]
-#define I_AM         (5.0E-3f)     // permanent magnet's flux linkage [Wb]
-#define R            (843.0E-3f)   // stator resistance [Ohm]
-#define T_MAX        (0.19f)       // maximum torque [Nm]
-#define I_PEAK       (5.40f)       // peak current rating [A]
-#define I_CONST      (1.79f)       // continuous current rating [A]
-#define ID_MAX       (0.75f)       // maximum demagnetization current [A]
-#define MTPV_MARGIN  (0.90f)       // [%]
-#define THERM_TAU    (2.0f)        // [sec]
-#define ON_LEVEL     (1.00f)       // [%]
-#define OFF_LEVEL    (0.95f)       // [%]
+/* Miscellaneous BSP definitions */
+#define KIT_ID                       (0x000DUL)    // For GUI's recognition of HW
 
-/* Parameter related to motor as well as mechanical load */
-#define MECH_INERTIA    (2.7E-6f)    // [kg.m^2]
-#define MECH_VISCOUS    (3.7E-6f)    // [kg.m^2/sec]
-#define MECH_FRICTION   (1.5E-3f)    // [kg.m^2/sec^2]
-
-#define VOLT_VMIN       (0.56f)    // [Vpk]
-#define VOLT_VF_RATIO   (5.0E-3f)    // [Vpk/(Ra/sec-elec)]
-
-
-#endif /* PMSM_FOC_MOTOR_NANOTEC_MOTOR_DB42S03_H_ */

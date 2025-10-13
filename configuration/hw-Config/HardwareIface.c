@@ -1,13 +1,5 @@
-/******************************************************************************
-* File Name:   inverter_card_configuration.h
-*
-* Description: This file provide the option to select the power board.
-*
-* Related Document: See README.md
-*
-*
-*******************************************************************************
-* Copyright 2024, Cypress Semiconductor Corporation (an Infineon company) or
+/*******************************************************************************
+* Copyright 2021-2024, Cypress Semiconductor Corporation (an Infineon company) or
 * an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
 *
 * This software, including source code, documentation and related
@@ -38,19 +30,21 @@
 * of such system or application assumes all risk of such use and in doing
 * so agrees to indemnify Cypress against all liability.
 *******************************************************************************/
+#include "HardwareIface.h"
 
-#ifndef INVERTER_CARD_CONFIGURATION_H_
-#define INVERTER_CARD_CONFIGURATION_H_
+// Connecting HW-agnostic function pointers to their corresponding HW-dependent functions
+void HW_IFACE_ConnectFcnPointers(void)
+{
 
-#define VARIANT_KIT_MOTOR_DC_250W_24V
+    hw_fcn.HardwareIfaceInit        = MCU_Init;   /* used in FCN, state machine init*/
+    hw_fcn.EnterCriticalSection     = MCU_EnterCriticalSection;
+    hw_fcn.ExitCriticalSection      = MCU_ExitCriticalSection;
+    hw_fcn.GateDriverEnterHighZ     = MCU_GateDriverEnterHighZ; /*Used in Profiler, State Machine*/
+    hw_fcn.GateDriverExitHighZ      = MCU_GateDriverExitHighZ;
+    hw_fcn.StartPeripherals         = MCU_StartPeripherals;
+    hw_fcn.StopPeripherals          = MCU_StopPeripherals;
+    hw_fcn.FlashRead                = MCU_FlashRead;
+    hw_fcn.FlashWrite               = MCU_FlashWrite;
+    hw_fcn.ArePhaseVoltagesMeasured = MCU_ArePhaseVoltagesMeasured;
 
-
-#if defined(VARIANT_KIT_MOTOR_DC_250W_24V)
-  #include "pmsm_foc_KIT_MOTOR_DC_250W_24V.h"
-#else
-  #error No valid inverter card variant defined
-#endif
-
-
-
-#endif /* INVERTER_CARD_CONFIGURATION_H_ */
+}
