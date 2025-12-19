@@ -4,7 +4,7 @@
 This code example demonstrates sensorless 1-shunt Field-Oriented Control (FOC) for a Permanent Magnet Synchronous Motor (PMSM) using Infineon’s PSOC&trade; Control C3 MCU.
 [View this README on GitHub.](https://github.com/Infineon/mtb-example-ce240312-foc-sl-1-shunt)
 
-[Provide feedback on this code example.](https://cypress.co1.qualtrics.com/jfe/form/SV_1NTns53sK2yiljn?Q_EED=eyJVbmlxdWUgRG9jIElkIjoiQ0UyNDAzMTIiLCJTcGVjIE51bWJlciI6IjAwMi00MDMxMiIsIkRvYyBUaXRsZSI6IlBTT0MmdHJhZGU7IENvbnRyb2wgTUNVOiBQTVNNIEZPQyBTTCB3aXRoIDEtc2h1bnQiLCJyaWQiOiJwcmFzaGFudGFiaGkiLCJEb2MgdmVyc2lvbiI6IjIuMC4wIiwiRG9jIExhbmd1YWdlIjoiRW5nbGlzaCIsIkRvYyBEaXZpc2lvbiI6Ik1DRCIsIkRvYyBCVSI6IklDVyIsIkRvYyBGYW1pbHkiOiJQU09DIn0=)
+[Provide feedback on this code example.](https://cypress.co1.qualtrics.com/jfe/form/SV_1NTns53sK2yiljn?Q_EED=eyJVbmlxdWUgRG9jIElkIjoiQ0UyNDAzMTIiLCJTcGVjIE51bWJlciI6IjAwMi00MDMxMiIsIkRvYyBUaXRsZSI6IlBTT0MmdHJhZGU7IENvbnRyb2wgTUNVOiBQTVNNIEZPQyBTTCB3aXRoIDEtc2h1bnQiLCJyaWQiOiJhYmhpc2hlay5wcmFzaGFudEBpbmZpbmVvbi5jb20iLCJEb2MgdmVyc2lvbiI6IjIuMC4xIiwiRG9jIExhbmd1YWdlIjoiRW5nbGlzaCIsIkRvYyBEaXZpc2lvbiI6Ik1DRCIsIkRvYyBCVSI6IklDVyIsIkRvYyBGYW1pbHkiOiJQU09DIn0=)
 
 
 ## Requirements
@@ -318,6 +318,7 @@ Document title: *CE240312* – *Motor Control: PMSM FOC SL with 1-shunt*
  ------- | ---------------------
  1.0.0   | New code example
  2.0.0   | Updated for motor-ctrl-lib 3.0.0
+ 2.0.1   | Updated for motor-ctrl-lib 3.1.0
 <br>
 
 
