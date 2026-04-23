@@ -2,8 +2,8 @@
 * File Name:   main.c
 *
 * Description: This code example demonstrates sensorless 1-shunt Field-Oriented 
-* Control (FOC) for a Permanent Magnet Synchronous Motor (PMSM) using Infineon’s 
-* PSOC™ Control C3 MCU. 
+* Control (FOC) for a Permanent Magnet Synchronous Motor (PMSM) using Infineonï¿½s 
+* PSOCï¿½ Control C3 MCU. 
 *
 * Related Document: See README.md
 *
@@ -47,6 +47,13 @@
 #include "cybsp.h"
 #include "Controller.h"
 /*******************************************************************************
+* Function prototype
+********************************************************************************/
+#if defined(APP_KIT_PSC3M5_2GO)
+void Motor_Control_POT_Control(void);
+#endif
+
+/*******************************************************************************
 * Function Name: main
 ********************************************************************************
 * Summary:
@@ -78,5 +85,83 @@ int main(void)
     for (;;)
     {
 
+#if defined(APP_KIT_PSC3M5_2GO)
+        Motor_Control_POT_Control();
+#endif
+
+#if (CPU_LOAD_CALC_ENABLED)
+        MCU_CPULoadCalc();
+#endif
     }
 }
+
+#if defined(APP_KIT_PSC3M5_2GO)
+/*******************************************************************************
+* Function Name: Motor_Control_POT_Control
+********************************************************************************
+* Summary: This function controls the pot and enable the gate drive.
+*
+* Parameters:
+*  void
+*
+* Return:
+*  void
+*
+*******************************************************************************/
+void Motor_Control_POT_Control(void)
+{
+    static bool flag;
+    static float t_min_configured;
+    static bool state_check=false;
+   /*Disable the driver when pot value is less than or equal to  5% */
+    if(motor[0].params_ptr->sys.cmd.source == Internal)
+    {
+          if((motor[0].sensor_iface_ptr->pot.raw >= 0.05f)) /* flag is added to allow GUI control of driver ON/OFF*/
+        {
+              if(flag == true)
+              {
+                flag = false;
+                motor[0].vars_ptr->en = true;
+              }
+
+        }
+          else if(motor[0].sensor_iface_ptr->pot.raw <= 0.025f )
+        {
+              flag = true;
+              motor[0].vars_ptr->en = false;
+
+        }
+
+    }
+    else
+    {
+        flag = false;
+    }
+    /*Enable or disable Gate driver*/
+    Cy_GPIO_Write(EN_IPM_PORT, EN_IPM_NUM, motor[0].vars_ptr->en);
+    /* Reduce the minimum time for current measurement in profile mode*/
+    if((Prof_Rot_Lock <= motor[0].sm_ptr->current) && (motor[0].sm_ptr->current <= Prof_Lq)&&(motor[0].params_ptr->ctrl.mode == Profiler_Mode))
+    {
+       if (state_check == false)
+       {
+          MCU_EnterCriticalSection();
+          t_min_configured = motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_t_min;
+          motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_t_min =  (t_min_configured <=3.0f)? 0.0f:t_min_configured-3.0f;
+          motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_d_min = 2.0f * motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_t_min * motor[0].params_ptr->sys.samp.fpwm; // [%]
+          MCU_ExitCriticalSection();
+          state_check =true;
+       }
+    }
+    else
+    {
+      if(state_check ==true)
+      {
+        MCU_EnterCriticalSection();
+        motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_t_min =t_min_configured;
+        motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_d_min = 2.0f * motor[0].params_ptr->sys.analog.shunt.hyb_mod.adc_t_min * motor[0].params_ptr->sys.samp.fpwm; // [%]
+        MCU_ExitCriticalSection();
+      }
+      state_check =false;
+    }
+}
+#endif

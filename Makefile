@@ -98,7 +98,7 @@ DEFINES+=MOTOR_CTRL_NO_OF_SCOPE_CHANNELS=0x4
 # Motor phase U,V and W voltage measurement; only used in "Dyno" mode
 # Torque calculation in RFO control method; used in load profiler
 # Addition gain and offset configuration for ADC input
-#DEFINES+=MOTOR_CTRL_DISABLE_ADDON_FEATURES
+DEFINES+=MOTOR_CTRL_DISABLE_ADDON_FEATURES
 
 # Enable optional code that is ordinarily disabled by default.
 #
@@ -144,7 +144,7 @@ VFP_SELECT=hardfp
 # NOTE: Includes and defines should use the INCLUDES and DEFINES variable
 # above.
 ifeq ($(TOOLCHAIN),GCC_ARM)
-CFLAGS=-Os
+CFLAGS=-Ofast
 CFLAGS+=-Wno-maybe-uninitialized    # This is getting rid of compiler warning when compiling PDL source file cyhal_spi.c
 endif
 

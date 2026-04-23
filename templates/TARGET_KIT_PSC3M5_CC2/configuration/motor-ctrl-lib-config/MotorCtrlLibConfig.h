@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2024, Cypress Semiconductor Corporation (an Infineon company) or
+* Copyright 2021-2024, Cypress Semiconductor Corporation (an Infineon company) or
 * an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
 *
 * This software, including source code, documentation and related
@@ -30,22 +30,16 @@
 * of such system or application assumes all risk of such use and in doing
 * so agrees to indemnify Cypress against all liability.
 *******************************************************************************/
-#include "General.h"
+#pragma once
 
-/* Temperature sensor configurations */
-#define ACTIVE_TEMP_SENSOR           false        // Not supported in default board, Active IC (e.g. MCP9700T-E/TT) vs Passive NTC (e.g. NCP18WF104J03RB)
-#if (ACTIVE_TEMP_SENSOR)
-#define TEMP_SENSOR_1D_MV  (10.0f)  //mV
-#define TEMP_SENSOR_0D_MV  (-400.0f) //mV
-#define TEMP_SENSOR_SCALE  ((TEMP_SENSOR_1D_MV * (1 << 12U))/(ADC_VREF_GAIN * CY_CFG_PWR_VDDA_MV))
-#define TEMP_SENSOR_OFFSET ((TEMP_SENSOR_SCALE/TEMP_SENSOR_1D_MV)*TEMP_SENSOR_0D_MV) 
-#endif
-extern  TEMP_SENS_LUT_t     Temp_Sens_LUT;
+#include "MotorCtrlHWConfig.h"
+#include "Controller.h"
 
-/* PWM configurations*/
-#define PWM_INVERSION                (false)
-#define PWM_TRIG_ADVANCE             (0U)          // [ticks]
 
-/* Miscellaneous BSP definitions */
-#define KIT_ID                       (0x000DUL)    // For GUI's recognition of HW
+void DriveEnableControlforPot(MOTOR_t *motor_ptr);
 
+/* Set to (1U) to enable potentiometer-based automatic drive enable/disable control.
+ * When enabled, DriveEnableControlforPot() is called each ISR cycle to evaluate
+ * the command against configured hysteresis thresholds and update vars->en.
+ * When disabled (0U), the call sites in MCU.c are excluded by the preprocessor. */
+#define DRIVE_ENABLE_CONTROL_POT    (0U)

@@ -1,0 +1,799 @@
+/******************************************************************************
+* File Name:   MCU.c
+*
+* Description: This file implements the PSOC Control C3 peripheral configuration
+* used for 3 shunt foc algorithm.
+*
+* Related Document: See README.md
+*
+*
+*******************************************************************************
+* Copyright 2024-2025, Cypress Semiconductor Corporation (an Infineon company) or
+* an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
+*
+* This software, including source code, documentation and related
+* materials ("Software") is owned by Cypress Semiconductor Corporation
+* or one of its affiliates ("Cypress") and is protected by and subject to
+* worldwide patent protection (United States and foreign),
+* United States copyright laws and international treaty provisions.
+* Therefore, you may use this Software only as provided in the license
+* agreement accompanying the software package from which you
+* obtained this Software ("EULA").
+* If no EULA applies, Cypress hereby grants you a personal, non-exclusive,
+* non-transferable license to copy, modify, and compile the Software
+* source code solely for use in connection with Cypress's
+* integrated circuit products.  Any reproduction, modification, translation,
+* compilation, or representation of this Software except as specified
+* above is prohibited without the express written permission of Cypress.
+*
+* Disclaimer: THIS SOFTWARE IS PROVIDED AS-IS, WITH NO WARRANTY OF ANY KIND,
+* EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, NONINFRINGEMENT, IMPLIED
+* WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. Cypress
+* reserves the right to make changes to the Software without notice. Cypress
+* does not assume any liability arising out of the application or use of the
+* Software or any product or circuit described in the Software. Cypress does
+* not authorize its products for use in any products where a malfunction or
+* failure of the Cypress product may reasonably be expected to result in
+* significant property damage, injury or death ("High Risk Product"). By
+* including Cypress's product in a High Risk Product, the manufacturer
+* of such system or application assumes all risk of such use and in doing
+* so agrees to indemnify Cypress against all liability.
+*******************************************************************************/
+#include "HardwareIface.h"
+#include "MCU.h"
+#include "ParamConfig.h"
+#if (MOTOR_CTRL_NO_OF_SCOPE_CHANNELS > 0) /* if scope is enabled */
+#include "probe_scope.h"
+#endif
+
+/******************************************************************************/
+
+// Disable timer reloads
+static inline void MCU_DisableTimerReload(uint8_t motor_id)
+{
+    TCPWM_GRP_CNT_TR_OUT_SEL(
+        SYNC_ISR1_HW,
+        TCPWM_GRP_CNT_GET_GRP(SYNC_ISR1_NUM),
+        SYNC_ISR1_NUM
+    ) = (
+        _VAL2FLD(TCPWM_GRP_CNT_V2_TR_OUT_SEL_OUT0, CY_TCPWM_CNT_TRIGGER_ON_DISABLED) |
+        _VAL2FLD(TCPWM_GRP_CNT_V2_TR_OUT_SEL_OUT1, CY_TCPWM_CNT_TRIGGER_ON_DISABLED)
+    );
+}
+
+// Enable timer reloads
+static inline void MCU_EnableTimerReload(uint8_t motor_id)
+{
+    TCPWM_GRP_CNT_TR_OUT_SEL(
+        SYNC_ISR1_HW,
+        TCPWM_GRP_CNT_GET_GRP(SYNC_ISR1_NUM),
+        SYNC_ISR1_NUM
+    ) = (
+        _VAL2FLD(TCPWM_GRP_CNT_V2_TR_OUT_SEL_OUT0, CY_TCPWM_CNT_TRIGGER_ON_DISABLED) |
+        _VAL2FLD(TCPWM_GRP_CNT_V2_TR_OUT_SEL_OUT1, CY_TCPWM_CNT_TRIGGER_ON_OVERFLOW)
+    );
+}
+
+static void MCU_RestartKilledPWMs(uint8_t motor_id)
+{
+    // Restart PWM counters if stopped by kill (counter not running)
+    if (!(Cy_TCPWM_PWM_GetStatus(PWM_U_HW, PWM_U_NUM) & CY_TCPWM_PWM_STATUS_COUNTER_RUNNING))
+    {
+        Cy_TCPWM_PWM_Disable(PWM_U_HW, PWM_U_NUM);
+        Cy_TCPWM_PWM_Disable(PWM_V_HW, PWM_V_NUM);
+        Cy_TCPWM_PWM_Disable(PWM_W_HW, PWM_W_NUM);
+        Cy_TCPWM_PWM_Enable(PWM_U_HW, PWM_U_NUM);
+        Cy_TCPWM_PWM_Enable(PWM_V_HW, PWM_V_NUM);
+        Cy_TCPWM_PWM_Enable(PWM_W_HW, PWM_W_NUM);
+        // Re-enable reload trigger so next SYNC_ISR1 overflow starts all PWMs in sync
+        mcu[motor_id].isr1.count = 0U;
+        MCU_EnableTimerReload(motor_id);
+    }
+}
+
+static inline void MCU_InitChipInfo(void)
+{
+    mc_info.chip_id = Cy_SysLib_GetDevice();
+    mc_info.chip_id <<= 16;
+    mc_info.chip_id |= Cy_SysLib_GetDeviceRevision();
+}
+
+static inline void MCU_PhaseUEnterHighZ(void)
+{
+    Cy_GPIO_SetHSIOM(PWMUL_PORT, PWMUL_NUM, HSIOM_SEL_GPIO);
+    Cy_GPIO_SetHSIOM(PWMUH_PORT, PWMUH_NUM, HSIOM_SEL_GPIO);
+    Cy_GPIO_Clr(PWMUL_PORT, PWMUL_NUM);
+    Cy_GPIO_Clr(PWMUH_PORT, PWMUH_NUM);
+}
+
+static inline void MCU_PhaseUExitHighZ(void)
+{
+    Cy_GPIO_SetHSIOM(PWMUL_PORT, PWMUL_NUM, PWMUL_HSIOM);
+    Cy_GPIO_SetHSIOM(PWMUH_PORT, PWMUH_NUM, PWMUH_HSIOM);
+}
+
+static inline void MCU_PhaseVEnterHighZ(void)
+{
+    Cy_GPIO_SetHSIOM(PWMVL_PORT, PWMVL_NUM, HSIOM_SEL_GPIO);
+    Cy_GPIO_SetHSIOM(PWMVH_PORT, PWMVH_NUM, HSIOM_SEL_GPIO);
+    Cy_GPIO_Clr(PWMVL_PORT, PWMVL_NUM);
+    Cy_GPIO_Clr(PWMVH_PORT, PWMVH_NUM);
+}
+
+static inline void MCU_PhaseVExitHighZ(void)
+{
+    Cy_GPIO_SetHSIOM(PWMVL_PORT, PWMVL_NUM, PWMVL_HSIOM);
+    Cy_GPIO_SetHSIOM(PWMVH_PORT, PWMVH_NUM, PWMVH_HSIOM);
+}
+
+static inline  void MCU_PhaseWEnterHighZ(void)
+{
+    Cy_GPIO_SetHSIOM(PWMWL_PORT, PWMWL_NUM, HSIOM_SEL_GPIO);
+    Cy_GPIO_SetHSIOM(PWMWH_PORT, PWMWH_NUM, HSIOM_SEL_GPIO);
+    Cy_GPIO_Clr(PWMWL_PORT, PWMWL_NUM);
+    Cy_GPIO_Clr(PWMWH_PORT, PWMWH_NUM);
+}
+
+static inline void MCU_PhaseWExitHighZ(void)
+{
+    Cy_GPIO_SetHSIOM(PWMWL_PORT, PWMWL_NUM, PWMWL_HSIOM);
+    Cy_GPIO_SetHSIOM(PWMWH_PORT, PWMWH_NUM, PWMWH_HSIOM);
+}
+
+// Temperature sensor calculations
+static inline float MCU_TempSensorCalc(void)
+{
+    // Local result holder
+    float result = 0.0f;
+
+#if (ACTIVE_TEMP_SENSOR)  // Active IC
+    // Active temperature sensor path
+    // result = (adc_scale.temp_ps * SAR_read) - (TEMP_SENSOR_OFFSET / TEMP_SENSOR_SCALE)
+    {
+        uint16_t sar_result = (uint16_t)Cy_HPPASS_SAR_Result_ChannelRead(ADC_SAMP_TEMP_CHAN_IDX);
+        float scale       = mcu[0].adc_scale.temp_ps;
+        result = (scale * sar_result) - (TEMP_SENSOR_OFFSET / TEMP_SENSOR_SCALE);
+    }
+
+#else  // Passive NTC
+    // Passive NTC path using LUT
+    {
+        // Read raw input scaled by adc_scale
+        float lut_input = mcu[0].adc_scale.temp_ps *
+                          (uint16_t)Cy_HPPASS_SAR_Result_ChannelRead(ADC_SAMP_TEMP_CHAN_IDX);
+
+        // Clamp index to valid LUT range
+        uint32_t index = SAT(1U,
+                             TEMP_SENS_LUT_WIDTH - 1U,
+                             (uint32_t)(lut_input * Temp_Sens_LUT.step_inv));
+
+        // Compute the exact LUT interpolation input
+        float input_index = Temp_Sens_LUT.step * (float)index;
+
+        // Linear interpolation between LUT[index-1] and LUT[index]
+        float delta_y = Temp_Sens_LUT.val[index] - Temp_Sens_LUT.val[index - 1U];
+        float delta_x = Temp_Sens_LUT.step_inv * (lut_input - input_index);
+        result = Temp_Sens_LUT.val[index - 1U] + delta_x * delta_y;
+    }
+#endif
+
+    return result;
+}
+
+static inline void MCU_InitADCs(void)
+{
+    Cy_HPPASS_AC_Start(0,1000U); //Start HPPASS Module
+    
+    // ADC conversion coefficients .............................................
+
+    // Shunt gain and scale factors
+    float cs_gain = ADC_CS_OPAMP_GAIN;
+
+    mcu[0].adc_scale.i_uvw =
+        (ADC_VREF_GAIN * CY_CFG_PWR_VDDA_MV * 1.0E-3f)
+        / ((1 << 12U) * motor[0].params_ptr->sys.analog.shunt.res * cs_gain); // [A/ticks]
+
+    mcu[0].adc_scale.v_uvw = (ADC_VREF_GAIN * CY_CFG_PWR_VDDA_MV * 1.0E-3f) / ((1<<12U) * motor[0].params_ptr->sys.analog.volt.vuvw_adc_scale); // [V/ticks]
+    mcu[0].adc_scale.v_dc = (ADC_VREF_GAIN * CY_CFG_PWR_VDDA_MV * 1.0E-3f) / ((1<<12U) * motor[0].params_ptr->sys.analog.volt.vdc_adc_scale); // [V/ticks]
+
+
+    mcu[0].adc_scale.v_pot = 1.0f / (1 << 12U); // [%/ticks]
+
+#if (ACTIVE_TEMP_SENSOR)
+    mcu[0].adc_scale.temp_ps =
+        (ADC_VREF_GAIN * CY_CFG_PWR_VDDA_MV * 1.0E-3f)
+        / ((1 << 12U) * TEMP_SENSOR_SCALE); // [Celsius/ticks]
+#else
+    // passive NTC
+    mcu[0].adc_scale.temp_ps = 1.0f / (1 << 12U); // [1/ticks], normalized voltage wrt Vcc
+#endif
+}
+
+static inline void MCU_InitTimers(void)
+{
+#if defined (EXE_TIMER_ENABLED)
+    // Init Execution time capture timer
+    Cy_TCPWM_Counter_Init(EXE_TIMER_HW, EXE_TIMER_NUM, &EXE_TIMER_config);
+#endif
+
+    // Clock frequencies .......................................................
+    mcu[0].clk.tcpwm = Cy_SysClk_PeriPclkGetFrequency(
+        (en_clk_dst_t)CLK_TCPWM_GRP_NUM, CY_SYSCLK_DIV_8_BIT, CLK_TCPWM_NUM); // [Hz]
+    mcu[0].clk.hall  = Cy_SysClk_PeriPclkGetFrequency(
+        (en_clk_dst_t)CLK_HALL_GRP_NUM,  CY_SYSCLK_DIV_8_BIT, CLK_HALL_NUM);  // [Hz]
+
+    // Timer calculations ......................................................
+    mcu[0].pwm.count           = 0U;
+    mcu[0].pwm.period          = ((uint32_t)(mcu[0].clk.tcpwm * motor[0].params_ptr->sys.samp.tpwm)) & 
+                                   (~((uint32_t)(0x1))); // must be even
+    mcu[0].pwm.duty_cycle_coeff = (float)(mcu[0].pwm.period >> 1);
+    mcu[0].pwm.deadtime = ((uint32_t)(mcu[0].clk.tcpwm * motor[0].params_ptr->sys.samp.deadtime)); 
+    mcu[0].isr0.count            = 0U;
+    mcu[0].isr0.period           = mcu[0].pwm.period * motor[0].params_ptr->sys.samp.fpwm_fs0_ratio;
+    mcu[0].isr0.duty_cycle_coeff = (float)(mcu[0].isr0.period);
+
+    mcu[0].isr1.count            = 0U;
+    mcu[0].isr1.period           = mcu[0].isr0.period * motor[0].params_ptr->sys.samp.fs0_fs1_ratio;
+    mcu[0].isr1.duty_cycle_coeff = (float)(mcu[0].isr1.period);
+
+    mcu[0].isr0_exe.sec_per_tick  = (1.0f / mcu[0].clk.tcpwm); // [sec/ticks]
+    mcu[0].isr0_exe.inv_max_time  = motor[0].params_ptr->sys.samp.fs0; // [1/sec]
+    mcu[0].isr1_exe.sec_per_tick  = (1.0f / mcu[0].clk.tcpwm); // [sec/ticks]
+    mcu[0].isr1_exe.inv_max_time  = motor[0].params_ptr->sys.samp.fs1; // [1/sec]
+
+    // Configure timers (TCPWMs) .............................................
+
+    uint32_t cc0 = (mcu[0].pwm.period >> 1);
+
+    // Initialize and configure ISR PWM timers
+    Cy_TCPWM_PWM_Init(ADC0_ISR0_HW, ADC0_ISR0_NUM, &ADC0_ISR0_config);
+    Cy_TCPWM_PWM_Init(ADC1_ISR0_HW, ADC1_ISR0_NUM, &ADC1_ISR0_config);
+
+    Cy_TCPWM_PWM_SetPeriod0(ADC0_ISR0_HW, ADC0_ISR0_NUM, mcu[0].isr0.period - 1U); // Sawtooth carrier
+    Cy_TCPWM_PWM_SetPeriod0(ADC1_ISR0_HW, ADC1_ISR0_NUM, mcu[0].isr0.period - 1U); // Sawtooth carrier
+
+    Cy_TCPWM_PWM_SetCompare0Val(ADC0_ISR0_HW, ADC0_ISR0_NUM, cc0); // Read ADCs at mid lower-switches' on-time
+    Cy_TCPWM_PWM_SetCompare1Val(ADC1_ISR0_HW, ADC1_ISR0_NUM, cc0); // Read ADCs at mid lower-switches' on-time
+
+    Cy_TCPWM_PWM_SetCompare0BufVal(ADC0_ISR0_HW, ADC0_ISR0_NUM, cc0); // Read ADCs at mid lower-switches' on-time
+    Cy_TCPWM_PWM_SetCompare1BufVal(ADC1_ISR0_HW, ADC1_ISR0_NUM, cc0); // Read ADCs at mid lower-switches' on-time
+
+    // Initialize and configure PWM carriers for U, V, W
+    Cy_TCPWM_PWM_Init(PWM_U_HW, PWM_U_NUM, &PWM_U_config);
+    Cy_TCPWM_PWM_SetPeriod0(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.period >> 1); // Triangle carrier
+    Cy_TCPWM_PWM_SetCompare0Val(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare1Val(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare0BufVal(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare1BufVal(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_PWMDeadTime(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeN(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeBuff(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeBuffN(PWM_U_HW, PWM_U_NUM, mcu[0].pwm.deadtime); // set dead time value
+
+    Cy_TCPWM_PWM_Init(PWM_V_HW, PWM_V_NUM, &PWM_V_config);
+    Cy_TCPWM_PWM_SetPeriod0(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.period >> 1); // Triangle carrier
+    Cy_TCPWM_PWM_SetCompare0Val(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare1Val(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare0BufVal(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare1BufVal(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_PWMDeadTime(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeN(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeBuff(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeBuffN(PWM_V_HW, PWM_V_NUM, mcu[0].pwm.deadtime); // set dead time value
+    
+    Cy_TCPWM_PWM_Init(PWM_W_HW, PWM_W_NUM, &PWM_W_config);
+    Cy_TCPWM_PWM_SetPeriod0(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.period >> 1); // Triangle carrier
+    Cy_TCPWM_PWM_SetCompare0Val(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare1Val(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare0BufVal(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_SetCompare1BufVal(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.period >> 2); // Start with duty cycle = 50%
+    Cy_TCPWM_PWM_PWMDeadTime(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeN(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeBuff(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.deadtime); // set dead time value
+    Cy_TCPWM_PWM_PWMDeadTimeBuffN(PWM_W_HW, PWM_W_NUM, mcu[0].pwm.deadtime); // set dead time value
+    
+    // ISR1 synchronization
+    cc0 = mcu[0].isr1.period - 1U;
+    Cy_TCPWM_PWM_Init(SYNC_ISR1_HW, SYNC_ISR1_NUM, &SYNC_ISR1_config);
+    Cy_TCPWM_PWM_SetPeriod0(SYNC_ISR1_HW, SYNC_ISR1_NUM, mcu[0].isr1.period - 1U); // Sawtooth carrier
+    Cy_TCPWM_PWM_SetCompare0Val(SYNC_ISR1_HW, SYNC_ISR1_NUM, cc0);
+
+    // Link sensor interface
+    motor[0].sensor_iface_ptr->uvw_idx = &motor[0].ctrl_ptr->volt_mod.uvw_idx;
+}
+
+static inline void MCU_FlashInit(void)
+{
+    // EEPROM Emulator configuration
+    mcu[0].eeprom.config.eepromSize         = srss_0_eeprom_0_SIZE;
+    mcu[0].eeprom.config.simpleMode         = srss_0_eeprom_0_SIMPLEMODE;
+    mcu[0].eeprom.config.wearLevelingFactor = srss_0_eeprom_0_WEARLEVELING_FACTOR;
+    mcu[0].eeprom.config.redundantCopy      = srss_0_eeprom_0_REDUNDANT_COPY;
+    mcu[0].eeprom.config.blockingWrite      = srss_0_eeprom_0_BLOCKINGMODE;
+    mcu[0].eeprom.config.userFlashStartAddr  = (uint32_t)Em_Eeprom_Storage[0U];
+
+    // Initialize EEPROM emulator
+    mcu[0].eeprom.status = Cy_Em_EEPROM_Init(
+        &mcu[0].eeprom.config,
+        &mcu[0].eeprom.context
+    );
+
+    // Mark initialization as complete
+    mcu[0].eeprom.init_done = true;
+}
+
+static inline void MCU_InitInterrupts(void)
+{
+    // Interrupt callbacks and priorities (higher value = lower urgency)
+    // ISR1
+    cy_stc_sysint_t ISR1_cfg = {
+        .intrSrc = SYNC_ISR1_IRQ,
+        .intrPriority = 2
+    };
+    Cy_SysInt_Init(&ISR1_cfg, MCU_RunISR1);
+
+    // ISR0
+    /* The interrupt configuration structure of ADC group 0 done */
+    cy_stc_sysint_t ISR0_cfg = {
+        .intrSrc = pass_interrupt_sar_entry_done_1_IRQn,
+        .intrPriority = 1U
+    };
+    Cy_SysInt_Init(&ISR0_cfg, MCU_RunISR0);
+    Cy_HPPASS_SAR_Result_SetInterruptMask(CY_HPPASS_INTR_SAR_RESULT_GROUP_1);
+
+    // NVIC connections
+    mcu[0].interrupt.nvic_adc0_isr0 = ISR0_cfg.intrSrc;
+    mcu[0].interrupt.nvic_sync_isr1 = ISR1_cfg.intrSrc;
+
+    NVIC_ClearPendingIRQ(mcu[0].interrupt.nvic_adc0_isr0);
+    NVIC_ClearPendingIRQ(mcu[0].interrupt.nvic_sync_isr1);
+}
+
+/******************************************************************************/
+void MCU_RunISR0(void)
+{
+    /* Clear interrupt */
+    Cy_HPPASS_SAR_Result_ClearInterrupt(CY_HPPASS_INTR_SAR_RESULT_GROUP_1);
+
+#if defined (EXE_TIMER_ENABLED)
+    MCU_StartTimeCap(&mcu[0].isr0_exe);
+#endif   
+
+    // Constants
+    const int32_t Curr_ADC_Half_Point_Ticks = (0x1 << 11);
+
+    // Read and scale current samples
+    motor[0].sensor_iface_ptr->i_samp_0.raw =
+        mcu[0].adc_scale.i_uvw * (Curr_ADC_Half_Point_Ticks - (uint16_t)Cy_HPPASS_FIFO_Read(0U, NULL));
+
+    motor[0].sensor_iface_ptr->i_samp_1.raw =
+        mcu[0].adc_scale.i_uvw * (Curr_ADC_Half_Point_Ticks - (uint16_t)Cy_HPPASS_FIFO_Read(0U, NULL));
+
+    // Read voltage and potentiometer
+    motor[0].sensor_iface_ptr->v_dc.raw =
+        mcu[0].adc_scale.v_dc * (uint16_t)Cy_HPPASS_SAR_Result_ChannelRead(ADC_SAMP_VBUS_CHAN_IDX);
+
+    motor[0].sensor_iface_ptr->pot.raw =
+        mcu[0].adc_scale.v_pot * (uint16_t)Cy_HPPASS_SAR_Result_ChannelRead(ADC_SAMP_VPOT_CHAN_IDX);
+
+    // Run the ISR state machine
+    STATE_MACHINE_RunISR0(&motor[0]);
+
+    // UVW command adjustment and PWM duty cycles
+    UVW_t d_uvw_cmd_adj = (UVW_t){
+        .w = motor[0].vars_ptr->d_uvw_cmd.w,
+        .v = motor[0].vars_ptr->d_uvw_cmd.v,
+        .u = motor[0].vars_ptr->d_uvw_cmd.u
+    };
+
+    uint32_t pwm_u_cc0 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * d_uvw_cmd_adj.u);
+    uint32_t pwm_v_cc0 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * d_uvw_cmd_adj.v);
+    uint32_t pwm_w_cc0 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * d_uvw_cmd_adj.w);
+
+    d_uvw_cmd_adj = (UVW_t){
+        .w = motor[0].vars_ptr->d_uvw_cmd_fall.w,
+        .v = motor[0].vars_ptr->d_uvw_cmd_fall.v,
+        .u = motor[0].vars_ptr->d_uvw_cmd_fall.u
+    };
+    uint32_t pwm_u_cc1 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * d_uvw_cmd_adj.u);
+    uint32_t pwm_v_cc1 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * d_uvw_cmd_adj.v);
+    uint32_t pwm_w_cc1 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * d_uvw_cmd_adj.w);
+
+    // Apply PWM compare values
+    Cy_TCPWM_PWM_SetCompare0BufVal(PWM_U_HW, PWM_U_NUM, pwm_u_cc0);
+    Cy_TCPWM_PWM_SetCompare1BufVal(PWM_U_HW, PWM_U_NUM, pwm_u_cc1);
+
+    Cy_TCPWM_PWM_SetCompare0BufVal(PWM_V_HW, PWM_V_NUM, pwm_v_cc0);
+    Cy_TCPWM_PWM_SetCompare1BufVal(PWM_V_HW, PWM_V_NUM, pwm_v_cc1);
+
+    Cy_TCPWM_PWM_SetCompare0BufVal(PWM_W_HW, PWM_W_NUM, pwm_w_cc0);
+    Cy_TCPWM_PWM_SetCompare1BufVal(PWM_W_HW, PWM_W_NUM, pwm_w_cc1);
+
+    // ADC ISR0 sampled values for DMA/triggering
+    uint32_t adc_isr0_cc_samp0 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * motor[0].vars_ptr->d_samp[0]);
+    uint32_t adc_isr0_cc_samp1 = (uint32_t)(mcu[0].pwm.duty_cycle_coeff * motor[0].vars_ptr->d_samp[1]);
+
+    Cy_TCPWM_PWM_SetCompare0BufVal(ADC0_ISR0_HW, ADC0_ISR0_NUM, adc_isr0_cc_samp0);
+    Cy_TCPWM_PWM_SetCompare1BufVal(ADC1_ISR0_HW, ADC1_ISR0_NUM, adc_isr0_cc_samp1);
+
+#if (MOTOR_CTRL_NO_OF_SCOPE_CHANNELS > 0) /*if scope is enabled*/
+    ProbeScope_Sampling();
+#endif
+
+#if defined (EXE_TIMER_ENABLED)
+    MCU_StopTimeCap(&mcu[0].isr0_exe);
+#endif
+}
+
+void MCU_RunISR1(void)
+{
+    // Clear ISR1 interrupt
+    Cy_TCPWM_ClearInterrupt(SYNC_ISR1_HW, SYNC_ISR1_NUM, SYNC_ISR1_config.interruptSources);
+#if defined (EXE_TIMER_ENABLED)
+    MCU_StartTimeCap(&mcu[0].isr1_exe);
+#endif
+
+    // First run: disable timer reload
+    if (mcu[0].isr1.count++ == 1U)
+    {
+        MCU_DisableTimerReload(0);
+    }
+
+    // Read sensors
+    motor[0].sensor_iface_ptr->temp_ps.raw = MCU_TempSensorCalc();
+
+    // using simple gate drivers
+    motor[0].sensor_iface_ptr->digital.fault =
+        !Cy_GPIO_Read(N_FAULT_HW_PORT, N_FAULT_HW_NUM);
+	// Detect kill via TCPWM: counter not running indicates kill event
+    if (!(Cy_TCPWM_PWM_GetStatus(PWM_U_HW, PWM_U_NUM) & CY_TCPWM_PWM_STATUS_COUNTER_RUNNING))
+    {
+        motor[0].sensor_iface_ptr->digital.fault = true;
+    }
+    motor[0].faults_ptr->flags.hw.cs_ocp =
+        motor[0].sensor_iface_ptr->digital.fault ? 0b111 : 0b000; // hw faults only cover over-current without SGD
+
+    // Direction switch
+#if defined(DIR_SWITCH_PORT) // hardware direction switch
+    motor[0].sensor_iface_ptr->digital.dir =
+        Cy_GPIO_Read(DIR_SWITCH_PORT, DIR_SWITCH_NUM);
+#elif defined(N_DIR_PUSHBTN_PORT) // push-button direction control
+    static bool user_btn_prev, user_btn = true;
+    user_btn_prev = user_btn;
+    user_btn = Cy_GPIO_Read(N_DIR_PUSHBTN_PORT, N_DIR_PUSHBTN_NUM);
+
+    motor[0].sensor_iface_ptr->digital.dir =
+        FALL_EDGE(user_btn_prev, user_btn)
+            ? ~motor[0].sensor_iface_ptr->digital.dir
+            : motor[0].sensor_iface_ptr->digital.dir; // toggle switch
+#endif
+
+    // Direction LED
+#if defined(DIR_LED_PORT)
+    Cy_GPIO_Write(DIR_LED_PORT, DIR_LED_NUM,
+                  (bool)(motor[0].sensor_iface_ptr->digital.dir));
+#endif
+
+    // Brake switch
+#if defined(N_BRK_SWITCH_PORT)
+    motor[0].sensor_iface_ptr->digital.brk =
+        !Cy_GPIO_Read(N_BRK_SWITCH_PORT, N_BRK_SWITCH_NUM);
+#else
+    motor[0].sensor_iface_ptr->digital.brk = 0x0; // no brake switch
+#endif
+
+    // Control ISR1
+    STATE_MACHINE_RunISR1(&motor[0]);
+
+    // SW fault LED
+#if defined(N_FAULT_LED_SW_PORT) // separate LEDs for hw and sw faults
+    Cy_GPIO_Write(N_FAULT_LED_SW_PORT, N_FAULT_LED_SW_NUM,
+                  (bool)(!motor[0].faults_ptr->flags_latched.sw.reg));
+#elif defined(FAULT_LED_ALL_PORT) // one LED for all faults
+    Cy_GPIO_Write(FAULT_LED_ALL_PORT, FAULT_LED_ALL_NUM,
+                  (bool)(motor[0].faults_ptr->flags_latched.all));
+#endif
+#if (DRIVE_ENABLE_CONTROL_POT)
+    DriveEnableControlforPot(&motor[0]);  // Update drive enable/disable based on potentiometer command (Motor 0)
+#endif
+#if defined (EXE_TIMER_ENABLED)
+    MCU_StopTimeCap(&mcu[0].isr1_exe);
+    //Process the execution time calculation
+    MCU_ProcessTimeCapISR1(&mcu[0].isr0_exe);
+    MCU_ProcessTimeCapISR1(&mcu[0].isr1_exe);
+#endif
+#if (CPU_LOAD_CALC_ENABLED)
+    StopWatchRun(&mcu[0].cpu_calc.timer);  /* Advance CPU load measurement timer (tick every ts1) */
+#endif
+
+}
+
+/******************************************************************************/
+void MCU_Init(uint8_t motor_id)
+{
+    MCU_InitChipInfo();
+    MCU_InitInterrupts();
+    MCU_InitADCs();
+    MCU_InitTimers();
+    
+#if (MOTOR_CTRL_NO_OF_SCOPE_CHANNELS > 0) /*if scope is enabled*/
+    static bool probe_scope_initialized = false;
+    if (!probe_scope_initialized)
+    {
+        ProbeScope_Init((uint32_t)motor[0].params_ptr->sys.samp.fs0);
+        probe_scope_initialized = true;
+    }
+#endif
+
+    // Initial direction: positive
+    motor[0].sensor_iface_ptr->digital.dir = true;
+}
+
+void MCU_EnterCriticalSection(void)
+{
+   mcu[0].interrupt.state = Cy_SysLib_EnterCriticalSection();
+}
+
+void MCU_ExitCriticalSection(void)
+{
+    Cy_SysLib_ExitCriticalSection(mcu[0].interrupt.state);
+}
+
+void MCU_GateDriverEnterHighZ(uint8_t motor_id)
+{
+    uint8_t phase_control = (motor_id>>5)&0x7;  //Special handling to control  driver per phase, Bit 7 - Phase W, Bit 6 - Phase V, Bit 5 - Phase U
+    uint8_t motor_inst    =  motor_id &0x1F;
+
+    MCU_RestartKilledPWMs(motor_id);
+
+    if ((phase_control == 0) ||(phase_control == 0x7) ) //Control all the 3 phases 
+    {
+        if(motor_inst == MOTOR_CTRL_ID_MOTOR0)  /*Motor 0*/
+        {
+            MCU_PhaseUEnterHighZ();
+            MCU_PhaseVEnterHighZ();
+            MCU_PhaseWEnterHighZ();
+        }
+    }
+    else 
+    {
+        if(motor_inst == MOTOR_CTRL_ID_MOTOR0)  /*Motor 0*/
+        {
+            if(phase_control&0x1){MCU_PhaseUEnterHighZ(); }  //Phase U control enabled
+            if(phase_control&0x2){MCU_PhaseVEnterHighZ(); }  //Phase V control enabled
+            if(phase_control&0x4){MCU_PhaseWEnterHighZ(); }  //Phase W control enabled
+        }           
+    }
+}
+
+void MCU_GateDriverExitHighZ(uint8_t motor_id)
+{
+    uint8_t phase_control = (motor_id>>5)&0x7;  //Special handling to control gate driver per phase separately, Bit 7 - Phase W, Bit 6 - Phase V, Bit 5 - Phase U
+    uint8_t motor_inst    =  motor_id &0x1F;
+
+    MCU_RestartKilledPWMs(motor_id);
+
+    if ((phase_control == 0) ||(phase_control == 0x7) ) //Control all the 3 phases 
+    {
+        if(motor_inst == MOTOR_CTRL_ID_MOTOR0)  /*Motor 0*/
+        {
+            MCU_PhaseUExitHighZ();
+            MCU_PhaseVExitHighZ();
+            MCU_PhaseWExitHighZ();
+        }
+    } 
+	else
+	{
+        if(motor_inst == MOTOR_CTRL_ID_MOTOR0)  /*Motor 0*/
+        {
+            if(phase_control&0x1){MCU_PhaseUExitHighZ(); }  //Phase U control enabled
+            if(phase_control&0x2){MCU_PhaseVExitHighZ(); }  //Phase V control enabled
+            if(phase_control&0x4){MCU_PhaseWExitHighZ(); }  //Phase W control enabled
+        }
+	}
+
+}
+void MCU_StartPeripherals(uint8_t motor_id)
+{
+    // Enter critical section to avoid ISR interference during peripheral setup
+    MCU_EnterCriticalSection();
+    
+#if defined (EXE_TIMER_ENABLED)
+    //Start Execution time capture timer
+    Cy_TCPWM_Counter_Enable(EXE_TIMER_HW, EXE_TIMER_NUM);
+    Cy_TCPWM_TriggerStart_Single(EXE_TIMER_HW, EXE_TIMER_NUM);   
+#endif
+
+    // Enable interrupts
+    NVIC_EnableIRQ(mcu[0].interrupt.nvic_adc0_isr0);
+    NVIC_EnableIRQ(mcu[0].interrupt.nvic_sync_isr1);
+
+    // Enable PWM modules
+    Cy_TCPWM_PWM_Enable(ADC0_ISR0_HW, ADC0_ISR0_NUM);
+    Cy_TCPWM_PWM_Enable(ADC1_ISR0_HW, ADC1_ISR0_NUM);
+    Cy_TCPWM_PWM_Enable(PWM_U_HW, PWM_U_NUM);
+    Cy_TCPWM_PWM_Enable(PWM_V_HW, PWM_V_NUM);
+    Cy_TCPWM_PWM_Enable(PWM_W_HW, PWM_W_NUM);
+    Cy_TCPWM_PWM_Enable(SYNC_ISR1_HW, SYNC_ISR1_NUM);
+
+    // Timer reload and start
+    MCU_EnableTimerReload(motor_id);
+    Cy_TCPWM_TriggerStart_Single(SYNC_ISR1_HW, SYNC_ISR1_NUM); // Start PWM_U, PWM_V, PWM_W, ADC0_ISR0 and ADC1_ISR0
+
+    // Exit critical section
+    MCU_ExitCriticalSection();
+}
+
+void MCU_StopPeripherals(uint8_t motor_id)
+{
+    // Enter critical section to safely disable peripherals
+    MCU_EnterCriticalSection();
+
+    // Disable PWM modules in reverse order
+    Cy_TCPWM_PWM_Disable(SYNC_ISR1_HW, SYNC_ISR1_NUM);
+    Cy_TCPWM_PWM_Disable(PWM_W_HW, PWM_W_NUM);
+    Cy_TCPWM_PWM_Disable(PWM_V_HW, PWM_V_NUM);
+    Cy_TCPWM_PWM_Disable(PWM_U_HW, PWM_U_NUM);
+    Cy_TCPWM_PWM_Disable(ADC1_ISR0_HW, ADC1_ISR0_NUM);
+    Cy_TCPWM_PWM_Disable(ADC0_ISR0_HW, ADC0_ISR0_NUM);
+
+    // Disable interrupts
+    NVIC_DisableIRQ(mcu[0].interrupt.nvic_sync_isr1);
+    NVIC_DisableIRQ(mcu[0].interrupt.nvic_adc0_isr0);
+
+#if defined (EXE_TIMER_ENABLED)    
+    // Disable Execution time capture timer
+    Cy_TCPWM_Counter_Disable(EXE_TIMER_HW, EXE_TIMER_NUM);
+#endif    
+    // Exit critical section
+    MCU_ExitCriticalSection();
+}
+
+bool MCU_FlashRead(uint8_t motor_id, PARAMS_ID_t id, PARAMS_t* ram_data)
+{
+    // Ensure EEPROM is initialized
+    if (!mcu[0].eeprom.init_done)
+    {
+        MCU_FlashInit();
+    }
+
+    // Check initialization/status
+    if (CY_EM_EEPROM_SUCCESS != mcu[0].eeprom.status)
+    {
+        return false;
+    }
+
+    // Read the RAM data from EEPROM
+    mcu[0].eeprom.status = Cy_Em_EEPROM_Read(
+        0u,
+        ram_data,
+        sizeof(PARAMS_t),
+        &mcu[0].eeprom.context
+    );
+
+    if (CY_EM_EEPROM_SUCCESS != mcu[0].eeprom.status)
+    {
+        return false;
+    }
+
+    // Validate the read data against the requested ID
+    if (ram_data->id.code        != id.code  ||
+        ram_data->id.build_config  != id.build_config ||
+        ram_data->id.ver           != id.ver)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool MCU_FlashWrite(uint8_t motor_id, PARAMS_t* ram_data)
+{
+    // Ensure EEPROM is initialized
+    if (!mcu[0].eeprom.init_done)
+    {
+        MCU_FlashInit();
+    }
+
+    // Verify initialization/status
+    if (CY_EM_EEPROM_SUCCESS != mcu[0].eeprom.status)
+    {
+        return false;
+    }
+
+    // Enter critical section before flash update
+    MCU_EnterCriticalSection();
+    
+    // Write to EEPROM
+    mcu[0].eeprom.status = Cy_Em_EEPROM_Write(
+        0U,
+        ram_data,
+        sizeof(PARAMS_t),
+        &mcu[0].eeprom.context
+    );
+    
+    // Exit critical section
+    MCU_ExitCriticalSection();
+    
+    // Check write result
+    if (CY_EM_EEPROM_SUCCESS != mcu[0].eeprom.status)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool MCU_ArePhaseVoltagesMeasured(uint8_t motor_id)
+{
+    return false;
+}
+
+#if defined (EXE_TIMER_ENABLED)
+/**
+ * @brief  Initializes the CPU load calculation module.
+ *
+ * Sets up the StopWatch timer used to periodically trigger CPU load
+ * measurements. Must be called after STATE_MACHINE_Init() since it
+ * requires motor[0].params_ptr->sys.samp.ts1 to be valid.
+ * The timer is incremented each ISR1 tick via StopWatchRun() in MCU_RunISR1().
+ */
+ 
+ /**
+ * @brief  Calculates and updates the CPU load periodically.
+ *
+ * Called from the main loop. Each time the StopWatch timer expires
+ * (every CPU_LOAD_CALC_EXERATE seconds), a 100ms idle measurement is
+ * performed using Cy_SysLib_Delay(). ISRs preempt this busy-wait loop,
+ * causing it to take longer than the pure idle time. The extra elapsed
+ * time relative to the idle baseline (CPU_LOAD_CALC_IDLE_TASKTIME +
+ * CPU_LOAD_CALC_IDLE_TASKOVERHEAD) represents ISR execution time.
+ *
+ * cpu_load = (end_time - idle_baseline) / end_time
+ *
+ * Results are stored in mcu[0].cpu_calc.cpu_load [0.0 = 0%, 1.0 = 100%].
+ * If end_time exceeds CPU_LOAD_CALC_TIMEOUT, cpu_load is set to 1.0 (100%).
+ */
+void MCU_CPULoadCalc(void)
+{
+  TIMER_t *timer_ptr = &mcu[0].cpu_calc.timer;
+
+    StopWatchInit(timer_ptr, CPU_LOAD_CALC_TIMEOUT, motor[0].params_ptr->sys.samp.ts1); 
+    StopWatchReset(timer_ptr);
+
+    Cy_SysLib_Delay((uint32_t)(CPU_LOAD_CALC_IDLE_TASKTIME * 1000U));
+    float end_time = StopWatchGetTime(timer_ptr);
+
+    if(StopWatchIsDone(timer_ptr))
+    {   mcu[0].cpu_calc.cpu_load = 1.0f; } 
+    else if(end_time <= 0.0f)
+    {   mcu[0].cpu_calc.cpu_load = 0.0f; } /* guard: no ticks counted yet */
+    else
+    {
+        mcu[0].cpu_calc.cpu_load = (end_time - (CPU_LOAD_CALC_IDLE_TASKTIME + CPU_LOAD_CALC_IDLE_TASKOVERHEAD)) / end_time;
+        /* Clamp to [0.0, 1.0] - tick resolution can cause small negative values */
+        if(mcu[0].cpu_calc.cpu_load < 0.0f) { mcu[0].cpu_calc.cpu_load = 0.0f; }
+        if(mcu[0].cpu_calc.cpu_load > 1.0f) { mcu[0].cpu_calc.cpu_load = 1.0f; }
+    }
+}
+void MCU_StartTimeCap(MCU_TIME_CAP_t* time_cap)
+{
+    // Initialize start counter from hardware timer
+    time_cap->start = (int32_t)(Cy_TCPWM_Counter_GetCounter(EXE_TIMER_HW, EXE_TIMER_NUM));
+}
+
+void MCU_StopTimeCap(MCU_TIME_CAP_t* time_cap)
+{
+    // Over flow and roll-over is OK as long as int32_t is used for 32bit timer/counters
+    time_cap->stop = (int32_t)(Cy_TCPWM_Counter_GetCounter(EXE_TIMER_HW, EXE_TIMER_NUM));
+    time_cap->duration_ticks = time_cap->stop - time_cap->start;
+}
+
+void MCU_ProcessTimeCapISR1(MCU_TIME_CAP_t* time_cap)
+{
+    // Convert ticks to seconds and compute utilization
+    time_cap->duration_sec = ((float)(time_cap->duration_ticks)) * (time_cap->sec_per_tick);
+    time_cap->util = time_cap->duration_sec * time_cap->inv_max_time;
+}
+
+#endif

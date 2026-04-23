@@ -4,30 +4,36 @@
 This code example demonstrates sensorless 1-shunt Field-Oriented Control (FOC) for a Permanent Magnet Synchronous Motor (PMSM) using Infineon’s PSOC&trade; Control C3 MCU.
 [View this README on GitHub.](https://github.com/Infineon/mtb-example-ce240312-foc-sl-1-shunt)
 
-[Provide feedback on this code example.](https://cypress.co1.qualtrics.com/jfe/form/SV_1NTns53sK2yiljn?Q_EED=eyJVbmlxdWUgRG9jIElkIjoiQ0UyNDAzMTIiLCJTcGVjIE51bWJlciI6IjAwMi00MDMxMiIsIkRvYyBUaXRsZSI6IlBTT0MmdHJhZGU7IENvbnRyb2wgTUNVOiBQTVNNIEZPQyBTTCB3aXRoIDEtc2h1bnQiLCJyaWQiOiJhYmhpc2hlay5wcmFzaGFudEBpbmZpbmVvbi5jb20iLCJEb2MgdmVyc2lvbiI6IjIuMC4xIiwiRG9jIExhbmd1YWdlIjoiRW5nbGlzaCIsIkRvYyBEaXZpc2lvbiI6Ik1DRCIsIkRvYyBCVSI6IklDVyIsIkRvYyBGYW1pbHkiOiJQU09DIn0=)
+[Provide feedback on this code example.](https://yourvoice.infineon.com/jfe/form/SV_1NTns53sK2yiljn?Q_EED=eyJVbmlxdWUgRG9jIElkIjoiQ0UyNDAzMTIiLCJTcGVjIE51bWJlciI6IjAwMi00MDMxMiIsIkRvYyBUaXRsZSI6IlBTT0MmdHJhZGU7IENvbnRyb2wgTUNVOiBQTVNNIEZPQyBTTCB3aXRoIDEtc2h1bnQiLCJyaWQiOiJhYmhpc2hlay5wcmFzaGFudEBpbmZpbmVvbi5jb20iLCJEb2MgdmVyc2lvbiI6IjIuMS4wIiwiRG9jIExhbmd1YWdlIjoiRW5nbGlzaCIsIkRvYyBEaXZpc2lvbiI6Ik1DRCIsIkRvYyBCVSI6IklDVyIsIkRvYyBGYW1pbHkiOiJQU09DIn0=)
 
 
 ## Requirements
 
-- [ModusToolbox&trade;](https://www.infineon.com/modustoolbox) v3.5 or later
-- Board support package (BSP) minimum required version: 1.0.3
+- [ModusToolbox&trade;](https://www.infineon.com/modustoolbox) v3.7 or later
+- Board support package (BSP) minimum required version:
+  - KIT_PSC3M5_CC2: 1.0.3
+  - KIT_PSC3M5_2GO: 2.0.1
 - Programming language: C
 - Associated parts: All [PSOC&trade; Control C3 MCUs](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-control-arm-cortex-m33-mcu)
-- Motor Control Library : v3.0.0 or later 
+- Motor Control Library : v3.2.0 
 
 ## Supported toolchains (make variable 'TOOLCHAIN')
 
-- GNU Arm&reg; Embedded Compiler v11.3.1 (`GCC_ARM`) – Default value of `TOOLCHAIN`
+- GNU Arm&reg; Embedded Compiler v14.2.1 (`GCC_ARM`) – Default value of `TOOLCHAIN`
 - IAR C/C++ Compiler v9.50.2 (`IAR`)
 
 
 ## Supported kits (make variable 'TARGET')
 
 - [KIT_PSC3M5_CC2 Motor Control Card](https://www.infineon.com/evaluation-board/KIT-PSC3M5-CC2) (`KIT_PSC3M5_CC2`)) – Default value of `TARGET`
+- [KIT_PSC3M5_2GO Compact Motor Control Kit](https://www.infineon.com/KIT_PSC3M5_2GO) (`KIT_PSC3M5_2GO`)
 
 ## Hardware setup
 
-See the respective kit quick start guide for the hardware setup information. For details, see [KIT_PSC3M5_MC1 PSOC&trade; Control C3M5 Complete System Motor Control Kit](https://www.infineon.com/evaluation-board/KIT-PSC3M5-MC1).
+Refer to the respective kit quick start guide for the hardware setup information
+
+-  [KIT_PSC3M5_MC1 PSOC&trade; Control C3M5 Complete System Motor Control Kit](https://www.infineon.com/KIT_PSC3M5_MC1) (`KIT_PSC3M5_MC1`)
+-  [KIT_PSC3M5_2GO Compact Motor Control Kit](https://www.infineon.com/KIT_PSC3M5_2GO) (`KIT_PSC3M5_2GO`)
 
 ## Software setup
 
@@ -319,6 +325,7 @@ Document title: *CE240312* – *Motor Control: PMSM FOC SL with 1-shunt*
  1.0.0   | New code example
  2.0.0   | Updated for motor-ctrl-lib 3.0.0
  2.0.1   | Updated for motor-ctrl-lib 3.1.0
+ 2.1.0   | Updated as per motor-ctrl-lib 3.2.0, enabled "KIT_PSC3M5_2GO" to demonstrate Pseudo differential
 <br>
 
 
